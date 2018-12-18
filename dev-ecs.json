@@ -1,0 +1,15 @@
+{
+  "Parameters" : {
+    "Subnets": "subnet-068fc293e3ad7a9be,subnet-010e9b59b8f280b98", 
+    "VPC": "vpc-02267fbf8b2ec8e30",
+    "Size": "2",
+    "MaxSize": "4",
+    "Scheme": "internal",
+    "InstanceType": "t2.large",
+    "ListenerCertificateARN": "arn:aws:iam::778784494011:server-certificate/Ret-Digital-DEV-ALB-CER",
+    "HealthCheckPath": "/health",
+    "HealthCheckPort": "3000",
+    "CustomDomainName": "retirement-b2c-dev.aws008east1.prudential.com",
+    "HostedZone": "Z2K1YY6RXP2SNC"
+  }
+}
