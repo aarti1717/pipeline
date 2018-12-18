@@ -1,0 +1,319 @@
+Description: >
+
+
+
+    This template uses a  VPC, subnets and security groups.
+
+
+
+    It then deploys a highly available ECS cluster using an AutoScaling Group, with 
+
+    ECS hosts distributed across multiple Availability Zones. 
+
+
+
+
+
+    Last Modified: 22nd September 2016
+
+    Author: Paul Maddox <pmaddox@amazon.com>
+
+    Last Modified: 9th September 2018
+
+    Author: Rushikesh Ubgade <rushikesh.ubgade@prudential.com
+
+
+
+Parameters:
+
+    VPC:
+
+     Description: Choose which VPC this ECS cluster should be deployed to
+
+     Type: AWS::EC2::VPC::Id
+
+     Default: 'vpc-02267fbf8b2ec8e30'
+
+
+
+    Subnets:
+
+     Description: Choose which subnets this ECS cluster should be deployed to
+
+     Type: List<AWS::EC2::Subnet::Id>
+
+     Default: 'subnet-068fc293e3ad7a9be,subnet-010e9b59b8f280b98'
+
+
+
+    Size:
+
+      Description: Select the Size ECS cluster hosts
+
+      Type: Number
+
+      Default: 2 
+
+    
+
+    MaxSize:
+
+      Description: Select the Size ECS cluster hosts
+
+      Type: Number
+
+      Default: 4
+
+
+
+    Scheme:
+
+       Description: The scheme for the loadbalancer
+
+       Type: String
+
+       Default: "internal"
+
+    
+
+    InstanceType:
+
+       Description: The Type of instance to launch the default is t2 large
+
+       Type: String
+
+       Default: "t2.large"
+
+    
+
+    ListenerCertificateARN:    
+
+       Description: The security certificate ARN 
+
+       Type: String
+
+       Default: 'arn:aws:iam::778784494011:server-certificate/Ret-Digital-DEV-ALB-CER'
+
+
+
+    HealthCheckPath:
+
+        Type: String
+
+        Description: The healthcheck path
+
+        Default: /health
+
+    
+
+    HealthCheckPort:
+
+        Type: Number
+
+        Description: The healthcheck port
+
+        Default: 3000   
+
+    
+
+    CustomDomainName: 
+
+        Type: String
+
+        Description: "The URL for the application load balancer"    
+
+        Default: 'retirement-b2c-dev.aws008east1.prudential.com'
+
+    
+
+    HostedZone:
+
+        Type: String
+
+        Description: "Hosted Zone ID of the Route 53 Zone (aws008.prudential.com"    
+
+        Default: 'Z2K1YY6RXP2SNC'
+
+      
+
+Resources:
+
+
+
+    SecurityGroup:
+
+        Type: AWS::CloudFormation::Stack
+
+        Properties:
+
+            TemplateURL: https://s3.amazonaws.com/rde-template/ecs-cluster-amazon-linux/security-groups.yaml
+
+            Parameters:
+
+                EnvironmentName: !Ref AWS::StackName
+
+                VPC: !Ref VPC
+
+
+
+    ALB:
+
+        Type: AWS::CloudFormation::Stack
+
+        Properties:
+
+            TemplateURL: https://s3.amazonaws.com/rde-template/ecs-cluster-amazon-linux/load-balancers-with-dns-cert.yaml
+
+            Parameters:
+
+                EnvironmentName: !Ref AWS::StackName
+
+                VPC: !Ref VPC
+
+                Subnets:  {"Fn::Join": [",", { "Ref": "Subnets" }]}
+
+                SecurityGroup: !GetAtt SecurityGroup.Outputs.LoadBalancerSecurityGroup
+
+                Scheme: !Ref Scheme
+
+                ListenerCertificateARN: !Ref ListenerCertificateARN
+
+                HealthCheckPath: !Ref HealthCheckPath
+
+                HealthCheckPort: !Ref HealthCheckPort
+
+                CustomDomainName: !Ref CustomDomainName
+
+                HostedZone: !Ref HostedZone
+
+
+
+    ECS:
+
+        Type: AWS::CloudFormation::Stack
+
+        Properties:
+
+            TemplateURL: https://s3.amazonaws.com/rde-template/ecs-cluster-amazon-linux/ecs-cluster.yaml
+
+            Parameters:
+
+                EnvironmentName: !Ref AWS::StackName
+
+                InstanceType: !Ref InstanceType
+
+                ClusterSize: !Ref Size
+
+                MaxClusterSize: !Ref MaxSize
+
+                VPC: !Ref VPC
+
+                SecurityGroup: !GetAtt SecurityGroup.Outputs.ECSHostSecurityGroup
+
+                Subnets:  {"Fn::Join": [",", { "Ref": "Subnets" }]}
+
+   
+
+
+
+
+
+    LifecycleHook:
+
+        Type: AWS::CloudFormation::Stack
+
+        Properties:
+
+            TemplateURL: https://s3.amazonaws.com/rde-template/ecs-cluster-amazon-linux/lifecyclehook.yaml
+
+            Parameters:
+
+                Cluster: !GetAtt ECS.Outputs.Cluster
+
+                ECSAutoScalingGroupName: !GetAtt ECS.Outputs.ECSAutoScalingGroupName
+
+
+
+Outputs:
+
+    LoadBalancer:
+
+      Description: The LoadBalancer ARN
+
+      Value: !GetAtt ALB.Outputs.LoadBalancer
+
+      Export:
+
+        Name: !Sub ${AWS::StackName}-LoadBalancer
+
+    
+
+    DNSName:
+
+      Description: The URL for the LoadBalancer
+
+      Value: !GetAtt ALB.Outputs.LoadBalancerUrl
+
+      Export:
+
+       Name: !Sub ${AWS::StackName}-DNSName
+
+
+
+    HTTPListener:
+
+      Description: The URL for the LoadBalancer
+
+      Value: !GetAtt ALB.Outputs.HTTPListenerARN
+
+      Export:
+
+       Name: !Sub ${AWS::StackName}-HTTPListener
+
+       
+
+    HTTPSListener:
+
+      Description: The URL for the LoadBalancer
+
+      Value: !GetAtt ALB.Outputs.HTTPSListenerARN
+
+      Export:
+
+       Name: !Sub ${AWS::StackName}-HTTPSListener      
+
+    
+
+    Cluster:
+
+      Description: The Cluster Name
+
+      Value: !GetAtt ECS.Outputs.Cluster
+
+      Export:
+
+       Name: !Sub ${AWS::StackName}-Cluster
+
+    
+
+    ECSServiceAutoScalingRole:
+
+      Description: The ECSServiceAutoScalingRole
+
+      Value: !GetAtt ECS.Outputs.ECSServiceAutoScalingRole
+
+      Export:
+
+       Name: !Sub ${AWS::StackName}-ECSServiceAutoScalingRole
+
+    
+
+    ECSAutoScalingGroupName:
+
+        Description: A reference to ECS AutoScaling Group Name
+
+        Value: !GetAtt ECS.Outputs.ECSAutoScalingGroupName
+
+        Export:
+
+          Name: !Sub ${AWS::StackName}-ECSAutoScalingGroupName
