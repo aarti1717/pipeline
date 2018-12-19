@@ -1,0 +1,136 @@
+Description: >
+    This template deploys an Application Load Balancer that exposes our various ECS services.
+    We create them it a seperate nested template, so it can be referenced by all of the other nested templates.
+
+Parameters:
+
+    EnvironmentName:
+        Description: An environment name that will be prefixed to resource names
+        Type: String
+
+    VPC:
+        Type: AWS::EC2::VPC::Id
+        Description: Choose which VPC the Application Load Balancer should be deployed to
+
+    Subnets:
+        Description: Choose which subnets the Application Load Balancer should be deployed to
+        Type: List<AWS::EC2::Subnet::Id>
+
+    SecurityGroup:
+        Description: Select the Security Group to apply to the Application Load Balancer
+        Type: AWS::EC2::SecurityGroup::Id
+    
+    Scheme:
+       Description: The scheme for the loadbalancer
+       Type: String
+       Default: "internal"
+    
+    ListenerCertificateARN:    
+       Description: The security certificate ARN 
+       Type: String
+
+    HealthCheckPath:
+        Type: String
+        Description: The healthcheck path
+        Default: /health
+    
+    HealthCheckPort:
+        Type: Number
+        Description: The healthcheck port
+        Default: 8080   
+    
+    CustomDomainName: 
+        Type: String
+        Description: "The URL for the application load balancer"    
+    
+    HostedZone:
+        Type: String
+        Description: "Hosted Zone ID of the Route 53 Zone (aws008.prudential.com"    
+    
+Conditions:
+    CreateHTTPSListener: !Not [ !Equals [ !Ref ListenerCertificateARN, "" ] ]
+    HasDomain: !Not [ !Equals [ !Ref CustomDomainName, "" ] ]
+    HasZone: !Not [ !Equals [ !Ref HostedZone, "" ] ]
+    
+
+Resources:
+
+    LoadBalancer:
+        Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+        Properties:
+            Name: !Ref EnvironmentName
+            Subnets: !Ref Subnets
+            SecurityGroups: 
+                - !Ref SecurityGroup
+            Scheme: !Ref Scheme
+            Tags: 
+                - Key: Name
+                  Value: !Ref EnvironmentName
+
+    HTTPListener:
+        Type : AWS::ElasticLoadBalancingV2::Listener
+        Properties:
+            DefaultActions:
+                - Type: forward
+                  TargetGroupArn: !Ref TargetGroup
+            LoadBalancerArn: !Ref LoadBalancer
+            Port: 80
+            Protocol: HTTP
+
+    HTTPSListener:
+        Type : AWS::ElasticLoadBalancingV2::Listener
+        Condition: CreateHTTPSListener
+        Properties:
+            DefaultActions:
+                - Type: forward
+                  TargetGroupArn: !Ref TargetGroup
+            LoadBalancerArn: !Ref LoadBalancer
+            Port: 443
+            Protocol: HTTPS
+            Certificates:
+                - CertificateArn: !Ref ListenerCertificateARN
+
+    TargetGroup:
+        Type: AWS::ElasticLoadBalancingV2::TargetGroup
+        Properties:
+          HealthCheckPath: !Ref HealthCheckPath
+          Port: !Ref HealthCheckPort
+          Protocol: HTTP
+          Name: 'Internal-Default-TG'
+          VpcId: !Ref VPC
+
+    DomainRoute53:
+        Type: AWS::Route53::RecordSet
+        Condition: HasDomain
+        Properties: 
+          Name: !Ref  CustomDomainName
+          Type: A
+          HostedZoneId: !Ref HostedZone
+          AliasTarget: 
+             EvaluateTargetHealth: false
+             DNSName: !GetAtt LoadBalancer.DNSName
+             HostedZoneId:  !GetAtt LoadBalancer.CanonicalHostedZoneID
+Outputs:
+    LoadBalancer:
+        Description: A reference to the Application Load Balancer
+        Value: !Ref LoadBalancer
+
+    LoadBalancerUrl:
+        Description: The URL of the application load balancer
+        Value: !GetAtt LoadBalancer.DNSName
+
+    CanonicalHostedZoneID:
+        Description: The CanonicalHostedZoneID of the application load balancer
+        Value: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        
+    HTTPListenerARN:
+        Description: The LoadBalancer HTTP Listener ARN
+        Value: !GetAtt HTTPListener.ARN
+
+    HTTPSListenerARN:
+        Description: The LoadBalancer HTTPS Listener ARN
+        Value: !GetAtt HTTPSListener.ARN    
+        
+
+
+
