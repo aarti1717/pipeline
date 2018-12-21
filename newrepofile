@@ -1,0 +1,220 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: |
+  Pipeline to deploy all RDE related build jobs
+Parameters:
+  KMSKey:
+    Description: KMS key to encrypt s3 artifact bucket
+    Type: String
+    Default: '998de47d-864c-46f2-9a21-48c097978bdb'
+  ArtifactBucket:
+    Type: String
+    Default: 'rde-templates'
+  department:
+    Type: String
+    Default: 'RDEAPI'
+  CFNRole:
+    Type: String
+    Default: 'cfnrole'  
+Resources:
+  TemplateBucket:
+    Type: 'AWS::S3::Bucket'
+    Properties:
+      BucketName: !Ref ArtifactBucket
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteEverythingIn1Day
+            Prefix: ""
+            Status: Enabled
+            ExpirationInDays: 1
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKey}'
+              SSEAlgorithm: 'aws:kms'
+    
+#####################################
+# IAM ROLES USED BY APPLICATION     #
+#####################################
+  InfrastructureCPCBRole:
+    DependsOn: 'TemplateBucket'
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub '${department}-InfrastructureCPCBRole-Role'
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - codepipeline.amazonaws.com
+                - codebuild.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      Policies:
+        - PolicyName: !Sub '${department}-CPCBRole-policy'
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'cloudformation:*'
+                Resource:
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${department}-Infrastructure/*'
+                  - !Sub 'arn:aws:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/${department}-roles/*'
+              - Effect: Allow
+                Action:
+                  - 'iam:PassRole'
+                Resource:
+                  - !Sub 'arn:aws:iam::${AWS::AccountId}:role/${CFNRole}'
+              - Effect: Allow
+                Action:
+                  - 'codecommit:GetBranch'
+                  - 'codecommit:GetCommit'
+                  - 'codecommit:CancelUploadArchive'
+                  - 'codecommit:UploadArchive' 
+                  - 'codecommit:GetUploadArchiveStatus'
+                Resource:
+                  - !Sub 'arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${TemplateBucket}'
+              - Effect: "Allow"
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:DescribeLogGroups'
+                  - 'logs:DescribeLogStreams'
+                  - 'logs:PutLogEvents'
+                Resource:
+                  - !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*'
+              - Effect: Allow
+                Action:
+                  - 'kms:DescribeKey'
+                  - 'kms:GenerateDataKey*'
+                  - 'kms:Encrypt'
+                  - 'kms:ReEncrypt*'
+                  - 'kms:Decrypt'
+                Resource:
+                  - !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKey}'
+              - Effect: Allow
+                Action:
+                  - 's3:*'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${TemplateBucket}'
+                  - !Sub 'arn:aws:s3:::${TemplateBucket}/*'
+              - Effect: Allow
+                Action:
+                  - 'ecr:*'
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - 'codebuild:StartBuild'
+                  - 'codebuild:StopBuild'
+                  - 'codebuild:BatchGetBuilds'
+                Resource:
+                  - !Sub 'arn:aws:codebuild:${AWS::Region}:${AWS::AccountId}:project/${department}-Infrastructure-CopyS3CFN'
+                  
+  BuildCopyCFNProject:
+    DependsOn: InfrastructureCPCBRole
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${department}-Infrastructure-CopyS3CFN
+      ServiceRole: !GetAtt 
+        - InfrastructureCPCBRole
+        - Arn
+      Artifacts: 
+        Type: CODEPIPELINE
+      EncryptionKey: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKey}'
+      Environment:
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/docker:17.09.0
+        Type: LINUX_CONTAINER
+        EnvironmentVariables:
+          - Name: S3_BUCKET
+            Type: PLAINTEXT
+            Value: !Sub '${TemplateBucket}'
+      Source:
+        BuildSpec: !Sub 'S3Copy.yaml'
+        Type: CODEPIPELINE
+        
+  Pipeline:
+    DependsOn: InfrastructureCPCBRole
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub '${department}-AllInfrastructure'
+      ArtifactStore:
+        Type: S3
+        Location: !Ref TemplateBucket
+        EncryptionKey: 
+          Id: !Sub 'arn:aws:kms:${AWS::Region}:${AWS::AccountId}:key/${KMSKey}'
+          Type: 'KMS'
+      RestartExecutionOnUpdate: true
+      RoleArn: !GetAtt 
+        - InfrastructureCPCBRole
+        - Arn
+      Stages:
+        - Name: Get-Template-Sources
+          Actions:
+            - Name: CodeCommit
+              ActionTypeId:
+                Category: Source
+                Provider: CodeCommit
+                Owner: AWS
+                Version: 1
+              OutputArtifacts:
+                - Name: Source
+              Configuration:
+                RepositoryName: !Ref TemplateBucket
+                PollForSourceChanges: 'true'
+                BranchName: master
+        - Name: Rebuild-Infrastructure-Cloudformation-PlusS3Update
+          Actions:
+            - Name: InfraSetupPipeline
+              InputArtifacts:
+                - Name: Source
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${CFNRole}'
+                StackName: !Sub '${department}-Infrastructure'
+                TemplatePath: 'Source::RDEAPISetupPipeline.yaml'
+              RunOrder: 1
+            - Name: CopytoS3CodeBuild
+              InputArtifacts:
+                - Name: Source
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Version: '1'
+                Provider: CodeBuild
+              Configuration:
+                ProjectName: !Ref BuildCopyCFNProject
+              RunOrder: 2
+        - Name: RDE-IAM-Roles
+          Actions:
+            - Name: RDE-API-IAM-Roles
+              InputArtifacts:
+                - Name: Source
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CloudFormation
+                Version: 1
+              Configuration:
+                ActionMode: CREATE_UPDATE
+                Capabilities: CAPABILITY_NAMED_IAM
+                RoleArn: !Sub 'arn:aws:iam::${AWS::AccountId}:role/${CFNRole}'
+                StackName: !Sub '${department}-roles'
+                TemplatePath: 'Source::rde_roles/cfn_api_roles.yml'  
+              
+Outputs:
+  BucketName:
+    Value: !Ref TemplateBucket
+    Export:
+      Name: !Sub '${department}-S3Bucket'
+  CFNRole:
+    Value: !Ref 'arn:aws:iam::${AWS::AccountId}:role/${CFNRole}'
+    Export:
+      Name: Templatecfnrole
